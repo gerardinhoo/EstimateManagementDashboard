@@ -1,5 +1,5 @@
-// EstimateManagementDashboard.jsx
-import React, { useEffect, useMemo, useState } from 'react';
+// src/components/EstimateManagementDashboard.jsx
+import React, { useState } from 'react';
 import {
   Calendar,
   Clock,
@@ -21,74 +21,22 @@ import {
   PieChart,
 } from 'lucide-react';
 
-/** ---------- simple persistence ---------- */
-const STORAGE_KEY = 'emd_v1_state'; // change if you need a reset via version bump
-const isBrowser = typeof window !== 'undefined';
-
-function loadPersisted() {
-  if (!isBrowser) return null;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    // very light validation
-    return {
-      estimates: Array.isArray(parsed?.estimates) ? parsed.estimates : [],
-      ptoHours: Number.isFinite(parsed?.ptoHours) ? parsed.ptoHours : 0,
-      otHours: Number.isFinite(parsed?.otHours) ? parsed.otHours : 0,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function savePersisted(state) {
-  if (!isBrowser) return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // ignore quota / private mode errors
-  }
-}
-/** --------------------------------------- */
+import { useEstimatesStore } from '../hooks/useEstimatesStore';
 
 const EstimateManagementDashboard = () => {
   const [activeTab, setActiveTab] = useState('intake');
-
-  // restore persisted state on first mount
-  const persisted = useMemo(loadPersisted, []);
-  const [estimates, setEstimates] = useState(persisted?.estimates || []);
-  const [ptoHours, setPtoHours] = useState(persisted?.ptoHours ?? 0);
-  const [otHours, setOtHours] = useState(persisted?.otHours ?? 0);
+  const { estimates, addEstimate, updateEstimate, deleteEstimate } =
+    useEstimatesStore();
 
   const [selectedDate, setSelectedDate] = useState(
     new Date().toISOString().split('T')[0]
   );
   const [selectedWeek, setSelectedWeek] = useState(new Date());
+  const [ptoHours, setPtoHours] = useState(0);
+  const [otHours, setOtHours] = useState(0);
   const [showAiSuggestions, setShowAiSuggestions] = useState(true);
 
-  // keep localStorage up to date
-  useEffect(() => {
-    savePersisted({ estimates, ptoHours, otHours });
-  }, [estimates, ptoHours, otHours]);
-
-  // cross-tab sync
-  useEffect(() => {
-    if (!isBrowser) return;
-    const onStorage = (e) => {
-      if (e.key !== STORAGE_KEY || !e.newValue) return;
-      try {
-        const parsed = JSON.parse(e.newValue);
-        if (Array.isArray(parsed?.estimates)) setEstimates(parsed.estimates);
-        if (Number.isFinite(parsed?.ptoHours)) setPtoHours(parsed.ptoHours);
-        if (Number.isFinite(parsed?.otHours)) setOtHours(parsed.otHours);
-      } catch {}
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, []);
-
-  // ---- time utils
+  // Time formatting utility functions
   const formatTimeToAMPM = (time24) => {
     if (!time24) return '';
     const [hours, minutes] = time24.split(':');
@@ -100,44 +48,67 @@ const EstimateManagementDashboard = () => {
 
   const convertTimeInput = (input) => {
     if (!input) return '';
-    if (input.includes(':') && input.length === 5) return input; // already 24h HH:MM
+
+    // If already in 24-hour format (contains :), return as is for storage
+    if (input.includes(':') && input.length === 5) {
+      return input;
+    }
+
+    // Parse various time formats
     const timeRegex = /^(\d{1,2}):?(\d{0,2})\s*(am|pm|a|p)?$/i;
     const match = input.toLowerCase().match(timeRegex);
-    if (!match) return input;
+
+    if (!match) return input; // Return original if can't parse
+
     let hours = parseInt(match[1], 10);
     let minutes = match[2] ? parseInt(match[2], 10) : 0;
     const ampm = match[3];
+
+    // Handle AM/PM conversion
     if (ampm) {
       if (ampm.startsWith('p') && hours !== 12) hours += 12;
       if (ampm.startsWith('a') && hours === 12) hours = 0;
     }
-    return `${hours.toString().padStart(2, '0')}:${minutes
-      .toString()
-      .padStart(2, '0')}`;
+
+    // Format to 24-hour time for storage
+    return (
+      hours.toString().padStart(2, '0') +
+      ':' +
+      minutes.toString().padStart(2, '0')
+    );
   };
 
+  // Always display time in 12-hour format
   const displayTime = (time24) => formatTimeToAMPM(time24);
 
-  // ---- tiny "AI" helpers (unchanged)
+  // AI Analytics Functions
   const aiAnalytics = {
     predictCompletionTime: (estimateType, currentWorkload) => {
       const baseDays = estimateType === 'Initial' ? 2 : 4;
       const workloadFactor = Math.max(1, currentWorkload / 5);
       const predicted = Math.round(baseDays * workloadFactor);
+
       return {
         days: predicted,
         confidence: Math.round(80 + Math.random() * 15),
-        reasoning: `Considering current workload of ${currentWorkload} items and historical ${estimateType.toLowerCase()} estimate timelines`,
+        reasoning:
+          'Considering current workload of ' +
+          currentWorkload +
+          ' items and historical ' +
+          estimateType.toLowerCase() +
+          ' estimate timelines',
       };
     },
+
     analyzeProductivity: (weeklyData) => {
       const avgDaily =
-        weeklyData.reduce((sum, d) => sum + d.count, 0) /
+        weeklyData.reduce((sum, day) => sum + day.count, 0) /
         (weeklyData.length || 1);
       const trend =
         weeklyData[weeklyData.length - 1]?.count > weeklyData[0]?.count
           ? 'increasing'
           : 'decreasing';
+
       return {
         avgDaily: Math.round(avgDaily * 10) / 10,
         trend,
@@ -148,12 +119,14 @@ const EstimateManagementDashboard = () => {
         riskLevel: avgDaily < 3 ? 'high' : avgDaily < 5 ? 'medium' : 'low',
       };
     },
+
     prioritizeWorkQueue: (items) =>
       items
         .map((est) => {
           const urgencyScore = Math.random() * 100;
           const valueScore = (parseFloat(est.estimateAmount) || 1000) / 100;
           const priorityScore = urgencyScore + valueScore;
+
           return {
             ...est,
             aiPriority:
@@ -169,9 +142,10 @@ const EstimateManagementDashboard = () => {
           };
         })
         .sort((a, b) => {
-          const order = { high: 3, medium: 2, low: 1 };
-          return order[b.aiPriority] - order[a.aiPriority];
+          const priorityOrder = { high: 3, medium: 2, low: 1 };
+          return priorityOrder[b.aiPriority] - priorityOrder[a.aiPriority];
         }),
+
     detectAnomalies: (items) => {
       const anomalies = [];
       items.forEach((est) => {
@@ -183,13 +157,15 @@ const EstimateManagementDashboard = () => {
             severity: 'warning',
           });
         }
+
         if (est.status === 'In Progress') {
           const daysSinceStart = Math.floor(Math.random() * 10);
           if (daysSinceStart > 5) {
             anomalies.push({
               id: est.id,
               type: 'delayed',
-              message: `Estimate has been in progress for ${daysSinceStart} days`,
+              message:
+                'Estimate has been in progress for ' + daysSinceStart + ' days',
               severity: 'high',
             });
           }
@@ -199,8 +175,7 @@ const EstimateManagementDashboard = () => {
     },
   };
 
-  /** ---------------- Components ---------------- */
-
+  // AI Insights Panel Component
   const AIInsightsPanel = () => {
     const workQueueEstimates = estimates.filter(
       (est) =>
@@ -273,6 +248,7 @@ const EstimateManagementDashboard = () => {
     );
   };
 
+  // Intake Form Component
   const IntakeForm = () => {
     const [formData, setFormData] = useState({
       estimateType: 'Initial',
@@ -294,6 +270,7 @@ const EstimateManagementDashboard = () => {
           formData.estimateType,
           estimates.filter((e) => e.status !== 'Done').length
         );
+
         setAiPredictions({ time: timePrediction });
         setShowPredictions(true);
       }
@@ -306,7 +283,7 @@ const EstimateManagementDashboard = () => {
       setFormData({ ...formData, timeReceived: converted });
     };
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
       e.preventDefault();
       const newEstimate = {
         id: Date.now(),
@@ -317,7 +294,7 @@ const EstimateManagementDashboard = () => {
         estimateAmount: '',
         aiPredictedDays: aiPredictions?.time?.days || null,
       };
-      setEstimates((prev) => [...prev, newEstimate]);
+      await addEstimate(newEstimate);
       setFormData({
         estimateType: 'Initial',
         claimNumber: '',
@@ -335,6 +312,7 @@ const EstimateManagementDashboard = () => {
     return (
       <div className='space-y-6'>
         <AIInsightsPanel />
+
         <div className='bg-white rounded-xl shadow-sm border border-gray-100 p-6'>
           <div className='flex items-center gap-3 mb-6'>
             <div className='w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center'>
@@ -498,6 +476,7 @@ const EstimateManagementDashboard = () => {
     );
   };
 
+  // Work Queue Component
   const WorkQueue = () => {
     const [editingId, setEditingId] = useState(null);
     const [editForm, setEditForm] = useState({});
@@ -531,24 +510,23 @@ const EstimateManagementDashboard = () => {
       setEditForm({ ...editForm, timeReturned: converted });
     };
 
-    const saveEdit = () => {
-      setEstimates((prev) =>
-        prev.map((est) => (est.id === editingId ? editForm : est))
-      );
+    const saveEdit = async () => {
+      await updateEstimate(editForm);
       setEditingId(null);
       setEditForm({});
       setTimeReturnedInput('');
     };
 
-    const deleteEstimate = (id) => {
+    const removeEstimate = async (id) => {
       if (window.confirm('Are you sure you want to delete this estimate?')) {
-        setEstimates((prev) => prev.filter((est) => est.id !== id));
+        await deleteEstimate(id);
       }
     };
 
     return (
       <div className='space-y-6'>
         <AIInsightsPanel />
+
         <div className='bg-white rounded-xl shadow-sm border border-gray-100 p-6'>
           <div className='flex items-center justify-between mb-6'>
             <div className='flex items-center gap-3'>
@@ -622,7 +600,7 @@ const EstimateManagementDashboard = () => {
                         </label>
                         <input
                           type='date'
-                          value={editForm.dateReturned}
+                          value={editForm.dateReturned || ''}
                           onChange={(e) =>
                             setEditForm({
                               ...editForm,
@@ -657,7 +635,7 @@ const EstimateManagementDashboard = () => {
                         <input
                           type='number'
                           step='0.01'
-                          value={editForm.estimateAmount}
+                          value={editForm.estimateAmount || ''}
                           onChange={(e) =>
                             setEditForm({
                               ...editForm,
@@ -770,7 +748,7 @@ const EstimateManagementDashboard = () => {
                           <Edit2 className='w-4 h-4' />
                         </button>
                         <button
-                          onClick={() => deleteEstimate(estimate.id)}
+                          onClick={() => removeEstimate(estimate.id)}
                           className='p-2 text-red-600 hover:bg-red-50 rounded-lg'
                         >
                           <Trash2 className='w-4 h-4' />
@@ -807,6 +785,7 @@ const EstimateManagementDashboard = () => {
     );
   };
 
+  // Billing Queue Component
   const BillingQueue = () => {
     const [editingAmount, setEditingAmount] = useState(null);
     const [editValue, setEditValue] = useState('');
@@ -825,30 +804,23 @@ const EstimateManagementDashboard = () => {
 
     const handleAmountEdit = (id, amount) => {
       setEditingAmount(id);
-      setEditValue(amount);
+      setEditValue(amount ?? '');
     };
 
-    const saveAmount = (id) => {
-      setEstimates((prev) =>
-        prev.map((est) =>
-          est.id === id ? { ...est, estimateAmount: editValue } : est
-        )
-      );
+    const saveAmount = async (est) => {
+      await updateEstimate({ ...est, estimateAmount: editValue });
       setEditingAmount(null);
       setEditValue('');
     };
 
-    const markAsBilled = (id) => {
-      setEstimates((prev) =>
-        prev.map((est) =>
-          est.id === id ? { ...est, clientBilled: true } : est
-        )
-      );
+    const markAsBilled = async (est) => {
+      await updateEstimate({ ...est, clientBilled: true });
     };
 
     return (
       <div className='space-y-6'>
         <AIInsightsPanel />
+
         <div className='bg-white rounded-xl shadow-sm border border-gray-100 p-6'>
           <div className='flex items-center justify-between mb-6'>
             <div className='flex items-center gap-3'>
@@ -908,11 +880,11 @@ const EstimateManagementDashboard = () => {
                             onChange={(e) => setEditValue(e.target.value)}
                             className='w-24 px-2 py-1 border border-gray-300 rounded text-sm'
                             onKeyDown={(e) => {
-                              if (e.key === 'Enter') saveAmount(estimate.id);
+                              if (e.key === 'Enter') saveAmount(estimate);
                             }}
                           />
                           <button
-                            onClick={() => saveAmount(estimate.id)}
+                            onClick={() => saveAmount(estimate)}
                             className='bg-green-600 text-white px-2 py-1 rounded text-xs hover:bg-green-700'
                           >
                             Save
@@ -934,7 +906,7 @@ const EstimateManagementDashboard = () => {
                     </div>
                   </div>
                   <button
-                    onClick={() => markAsBilled(estimate.id)}
+                    onClick={() => markAsBilled(estimate)}
                     className='bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium ml-4'
                   >
                     Client Billed
@@ -954,6 +926,7 @@ const EstimateManagementDashboard = () => {
     );
   };
 
+  // Daily Estimate Tracker Component
   const DailyEstimateTracker = () => {
     const completedOnDate = estimates.filter(
       (est) => est.status === 'Done' && est.dateReturned === selectedDate
@@ -973,12 +946,13 @@ const EstimateManagementDashboard = () => {
     const todayVsAverage = totalCount - avgDaily;
     const performanceMessage =
       todayVsAverage > 0
-        ? `+${todayVsAverage.toFixed(1)} above average`
-        : `${todayVsAverage.toFixed(1)} below average`;
+        ? '+' + todayVsAverage.toFixed(1) + ' above average'
+        : todayVsAverage.toFixed(1) + ' below average';
 
     return (
       <div className='space-y-6'>
         <AIInsightsPanel />
+
         <div className='bg-white rounded-xl shadow-sm border border-gray-100 p-6'>
           <div className='flex items-center justify-between mb-6'>
             <div className='flex items-center gap-3'>
@@ -1083,13 +1057,15 @@ const EstimateManagementDashboard = () => {
     );
   };
 
+  // Productivity Calculator Component
   const ProductivityCalculator = () => {
     const getWeekStart = (date) => {
       const d = new Date(date);
       const day = d.getDay();
-      const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday start
+      const diff = d.getDate() - day + (day === 0 ? -6 : 1);
       return new Date(d.setDate(diff));
     };
+
     const getWeekEnd = (date) => {
       const start = getWeekStart(date);
       const end = new Date(start);
@@ -1145,6 +1121,7 @@ const EstimateManagementDashboard = () => {
     return (
       <div className='space-y-6'>
         <AIInsightsPanel />
+
         <div className='bg-white rounded-xl shadow-sm border border-gray-100 p-6'>
           <div className='flex items-center justify-between mb-6'>
             <div className='flex items-center gap-3'>
@@ -1356,7 +1333,6 @@ const EstimateManagementDashboard = () => {
     );
   };
 
-  /** -------------- Shell -------------- */
   return (
     <div className='min-h-screen bg-gray-50'>
       <nav className='bg-white shadow-sm border-b border-gray-200'>
